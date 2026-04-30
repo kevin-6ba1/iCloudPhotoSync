@@ -3,6 +3,7 @@ import base64
 import json
 import logging
 import time
+import unicodedata
 
 LOGGER = logging.getLogger(__name__)
 
@@ -18,6 +19,19 @@ SMART_FOLDERS = {
     "Slo-mo": ("SLO-MO", "Slo-mo"),
     "Bursts": ("BURST", "Burst"),
 }
+
+
+def _decode_b64_name(raw):
+    """Decode a base64-encoded name from CloudKit, handling missing padding
+    and non-UTF-8 data. Returns the decoded string or the raw value."""
+    if not raw:
+        return ""
+    try:
+        padded = raw + "=" * (-len(raw) % 4)
+        name = base64.b64decode(padded).decode("utf-8")
+        return unicodedata.normalize("NFC", name)
+    except Exception:
+        return raw
 
 
 class PhotoAlbum:
@@ -95,10 +109,7 @@ class PhotoAsset:
 
         # Filename
         raw = m.get("filenameEnc", {}).get("value", "")
-        try:
-            self.filename = base64.b64decode(raw).decode("utf-8")
-        except Exception:
-            self.filename = raw
+        self.filename = _decode_b64_name(raw) or raw
 
         # Dates
         self.created = a.get("assetDate", {}).get("value", 0)
@@ -364,12 +375,7 @@ class PhotosService:
                 if fields.get("isDeleted", {}).get("value"):
                     continue
                 raw_name = fields.get("albumNameEnc", {}).get("value", "")
-                name = ""
-                if raw_name:
-                    try:
-                        name = base64.b64decode(raw_name).decode("utf-8")
-                    except Exception:
-                        name = raw_name
+                name = _decode_b64_name(raw_name)
                 if not name:
                     name = fields.get("albumName", {}).get("value", "")
                 if not name:
@@ -405,12 +411,7 @@ class PhotosService:
                     if fields.get("isDeleted", {}).get("value"):
                         continue
                     raw_name = fields.get("albumNameEnc", {}).get("value", "")
-                    name = ""
-                    if raw_name:
-                        try:
-                            name = base64.b64decode(raw_name).decode("utf-8")
-                        except Exception:
-                            name = raw_name
+                    name = _decode_b64_name(raw_name)
                     if not name:
                         name = fields.get("albumName", {}).get("value", "")
                     if name:
@@ -422,6 +423,12 @@ class PhotosService:
                 LOGGER.exception("Failed to fetch sub-albums for folder %s", folder_name)
 
         return self._albums
+
+    def refresh_albums(self):
+        """Invalidate cached albums so the next access re-fetches from iCloud."""
+        self._albums = None
+        self._shared_albums = None
+        self._shared_albums_error = None
 
     def _get_album_count(self, obj_type):
         """Get photo count for an album by its obj_type."""
@@ -772,11 +779,8 @@ class PhotosService:
                             continue
                         fields = record.get("fields", {})
                         raw_name = fields.get("albumNameEnc", {}).get("value", "")
-                        if raw_name:
-                            try:
-                                album_name = base64.b64decode(raw_name).decode("utf-8")
-                            except Exception:
-                                album_name = raw_name
+                        album_name = _decode_b64_name(raw_name)
+                        if album_name:
                             break
 
                     if not album_name:

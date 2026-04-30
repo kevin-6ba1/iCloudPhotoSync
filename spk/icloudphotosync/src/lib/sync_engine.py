@@ -378,10 +378,11 @@ class SyncProgress:
         self.started_at = 0
         self.finished_at = 0
         self.error = ""
+        self.warnings = []
         self._last_save_ts = 0.0
 
     def to_dict(self):
-        return {
+        d = {
             "status": self.status,
             "current_album": self.current_album,
             "total_photos": self.total_photos,
@@ -392,6 +393,9 @@ class SyncProgress:
             "finished_at": self.finished_at,
             "error": self.error,
         }
+        if self.warnings:
+            d["warnings"] = self.warnings
+        return d
 
     def save(self):
         """Persist progress to a JSON file for status queries.
@@ -711,6 +715,10 @@ def _run_sync_locked(account_id):
         raise
 
     try:
+        # Invalidate album cache so we fetch fresh data from iCloud,
+        # preventing "Album not found" errors for recently changed albums.
+        photos_svc.refresh_albums()
+
         # Build a plan with photo counts upfront so total_photos is a
         # stable denominator for the progress bar (no mid-run growth).
         plan = []  # (album_name, folder_key, subfolder, photo_count, latest_date)
@@ -742,7 +750,13 @@ def _run_sync_locked(account_id):
             def _album_meta(name):
                 try:
                     alb = photos_svc.albums.get(name)
-                    if not alb or alb.album_type == "folder":
+                    if not alb:
+                        LOGGER.warning(
+                            "Album %r not found in iCloud — it may have been "
+                            "renamed, deleted, or contains special characters "
+                            "that changed during encoding. Skipping.", name)
+                        return (0, 0)
+                    if alb.album_type == "folder":
                         return (0, 0)
                     # CloudKit rejects resultsLimit<=2, photos() doubles
                     # internally (asset+master pairing), so limit=2.
@@ -820,6 +834,16 @@ def _run_sync_locked(account_id):
             progress.status = "stopped"
         else:
             progress.status = "complete"
+            if heic_convert_failures:
+                LOGGER.warning(
+                    "%d HEIC file(s) could not be converted to JPG. "
+                    "Check that heif-convert or ImageMagick is properly "
+                    "installed. Failed files: %s",
+                    len(heic_convert_failures),
+                    ", ".join(heic_convert_failures[:20]))
+                progress.warnings = progress.warnings or []
+                progress.warnings.append(
+                    "%d HEIC->JPG conversion(s) failed" % len(heic_convert_failures))
         progress.finished_at = int(time.time())
         progress.save()
 
@@ -1034,6 +1058,8 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                 "bundled binaries included.", formats,
             )
 
+        heic_convert_failures = []
+
         def _process(task):
             """Returns (photo, fname, fpath, ok, is_conn_error, is_url_expired)."""
             photo, url, fpath, fname = task
@@ -1052,12 +1078,16 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
             if formats in ("jpg_only", "both") and heic_converter.is_heic(fname):
                 if heic_converter.can_convert():
                     jpg_path = heic_converter.convert_to_jpg(fpath, quality=jpg_quality)
-                    if jpg_path and formats == "jpg_only":
-                        try:
-                            os.remove(fpath)
-                        except OSError:
-                            pass
-                        fpath = jpg_path
+                    if jpg_path:
+                        if formats == "jpg_only":
+                            try:
+                                os.remove(fpath)
+                            except OSError:
+                                pass
+                            fpath = jpg_path
+                    else:
+                        LOGGER.warning("HEIC conversion failed for %s", fname)
+                        heic_convert_failures.append(fname)
             return (photo, fname, fpath, True, False, False)
 
         pending_tasks = list(tasks)

@@ -699,6 +699,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.OverviewTab", {
             '<tr><td>' + SYNO.SDS.iCloudPhotoSync._T("overview:label_storage") + '</td><td id="ics-ov-size">' + (cs.sizeText || '\u2014') + '</td></tr>' +
             '<tr><td>' + SYNO.SDS.iCloudPhotoSync._T("overview:label_last_sync") + '</td><td id="ics-ov-lastsync">' + (cs.lastSyncText || '\u2014') + '</td></tr>' +
             '<tr><td>' + SYNO.SDS.iCloudPhotoSync._T("overview:label_last_run") + '</td><td id="ics-ov-lastrun">' + (cs.lastRunText || '\u2014') + '</td></tr>' +
+            '<tr id="ics-ov-warnings-row" style="display:none;"><td>' + SYNO.SDS.iCloudPhotoSync._T("overview:label_warnings") + '</td><td id="ics-ov-warnings" style="color:#b8860b;"></td></tr>' +
             '</table>' +
             '</div>' +
             '</div>';
@@ -863,8 +864,48 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.OverviewTab", {
         if (progWrap) progWrap.dom.style.display = "none";
     },
 
+    _setWarningState: function (title, warnings) {
+        var self = this;
+        var iconEl = this.body.dom.querySelector(".ics-status-icon");
+        var titleEl = this.body.dom.querySelector(".ics-status-title");
+        var subtitleEl = Ext.get("ics-ov-subtitle");
+        var syncBtn = Ext.get("ics-sync-now-btn");
+        var stopBtn = Ext.get("ics-stop-sync-btn");
+        var progWrap = Ext.get("ics-sync-progress");
+
+        if (iconEl) iconEl.className = "ics-status-icon ics-icon-warn";
+        if (titleEl) titleEl.innerHTML = title;
+        if (subtitleEl) {
+            var warnHtml = '<span style="color:#b8860b;">' +
+                Ext.util.Format.htmlEncode(warnings.join("; ")) +
+                '</span> — <a href="#" id="ics-warn-log-link" style="color:#057feb;text-decoration:underline;">' +
+                SYNO.SDS.iCloudPhotoSync._T("overview:link_show_log") + '</a>';
+            subtitleEl.update(warnHtml);
+            var logLink = document.getElementById("ics-warn-log-link");
+            if (logLink) {
+                logLink.onclick = function (e) {
+                    e.preventDefault();
+                    var tabs = self.ownerCt;
+                    if (tabs && tabs.setActiveTab) {
+                        tabs.items.each(function (item) {
+                            if (item instanceof SYNO.SDS.iCloudPhotoSync.LogViewer) {
+                                tabs.setActiveTab(item);
+                                return false;
+                            }
+                        });
+                    }
+                };
+            }
+        }
+
+        if (syncBtn) syncBtn.dom.style.display = "";
+        if (stopBtn) stopBtn.dom.style.display = "none";
+        if (progWrap) progWrap.dom.style.display = "none";
+    },
+
     _updateStatsFromData: function (data) {
         if (!data || !data.manifest) return;
+        var self = this;
         var m = data.manifest;
         var syncedText = m.total_synced > 0 ? SYNO.SDS.iCloudPhotoSync._T("overview:items_synced", [m.total_synced.toLocaleString("de-DE")]) : SYNO.SDS.iCloudPhotoSync._T("overview:not_yet_synced");
         var sizeText = this._formatSize(m.total_size);
@@ -887,6 +928,39 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.OverviewTab", {
         if (el) el.update(lastSyncText);
         el = Ext.get("ics-ov-lastrun");
         if (el) el.update(lastRunText);
+
+        var warnRow = document.getElementById("ics-ov-warnings-row");
+        var warnEl = Ext.get("ics-ov-warnings");
+        var hasWarnings = (data.warnings && data.warnings.length > 0) || (data.failed_photos > 0);
+        if (warnRow && warnEl) {
+            if (hasWarnings) {
+                var warnList = (data.warnings || []).slice();
+                if (data.failed_photos > 0 && warnList.length === 0) {
+                    warnList.push(data.failed_photos + " file(s) failed");
+                }
+                warnRow.style.display = "";
+                warnEl.update(Ext.util.Format.htmlEncode(warnList.join("; ")) +
+                    ' — <a href="#" id="ics-warn-log-link2" style="color:#057feb;text-decoration:underline;">' +
+                    SYNO.SDS.iCloudPhotoSync._T("overview:link_show_log") + '</a>');
+                var logLink2 = document.getElementById("ics-warn-log-link2");
+                if (logLink2) {
+                    logLink2.onclick = function (e) {
+                        e.preventDefault();
+                        var tabs = self.ownerCt;
+                        if (tabs && tabs.setActiveTab) {
+                            tabs.items.each(function (item) {
+                                if (item instanceof SYNO.SDS.iCloudPhotoSync.LogViewer) {
+                                    tabs.setActiveTab(item);
+                                    return false;
+                                }
+                            });
+                        }
+                    };
+                }
+            } else {
+                warnRow.style.display = "none";
+            }
+        }
     },
 
     _refreshStats: function (accountId) {
@@ -1039,11 +1113,24 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.OverviewTab", {
             } else if (data.status === "complete") {
                 self._stopRequested = false;
                 var pw = Ext.get("ics-sync-progress"); if (pw) pw.dom.style.display = "none";
-                self.appWin.statusBar.body.update(SYNO.SDS.iCloudPhotoSync._T("status:ready"));
-                self._setIdleState(
-                    SYNO.SDS.iCloudPhotoSync._T("overview:status_uptodate"),
-                    SYNO.SDS.iCloudPhotoSync._T("overview:status_connected")
-                );
+                var hasWarnings = (data.warnings && data.warnings.length > 0) || (data.failed_photos > 0);
+                if (hasWarnings) {
+                    var warnList = (data.warnings || []).slice();
+                    if (data.failed_photos > 0 && warnList.length === 0) {
+                        warnList.push(data.failed_photos + " file(s) failed");
+                    }
+                    self.appWin.statusBar.body.update(SYNO.SDS.iCloudPhotoSync._T("overview:status_complete_warnings"));
+                    self._setWarningState(
+                        SYNO.SDS.iCloudPhotoSync._T("overview:status_complete_warnings"),
+                        warnList
+                    );
+                } else {
+                    self.appWin.statusBar.body.update(SYNO.SDS.iCloudPhotoSync._T("status:ready"));
+                    self._setIdleState(
+                        SYNO.SDS.iCloudPhotoSync._T("overview:status_uptodate"),
+                        SYNO.SDS.iCloudPhotoSync._T("overview:status_connected")
+                    );
+                }
                 self._refreshStats(accountId);
             } else if (data.status === "error") {
                 self._stopRequested = false;
@@ -2816,7 +2903,40 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.LogViewer", {
             }
         });
 
-        // Load current log level from server
+        this.retentionCombo = new SYNO.ux.ComboBox({
+            store: new Ext.data.ArrayStore({
+                fields: ["val", "label"],
+                data: [
+                    ["7", SYNO.SDS.iCloudPhotoSync._T("log:retention_7d")],
+                    ["14", SYNO.SDS.iCloudPhotoSync._T("log:retention_14d")],
+                    ["30", SYNO.SDS.iCloudPhotoSync._T("log:retention_30d")],
+                    ["90", SYNO.SDS.iCloudPhotoSync._T("log:retention_90d")],
+                    ["0", SYNO.SDS.iCloudPhotoSync._T("log:retention_all")]
+                ]
+            }),
+            displayField: "label",
+            valueField: "val",
+            mode: "local",
+            triggerAction: "all",
+            editable: false,
+            width: 100,
+            value: "7",
+            listeners: {
+                select: function (combo, record) {
+                    var days = record.get("val");
+                    self.appWin.apiRequest("log", {
+                        action: "set_retention",
+                        days: days
+                    }, function (success) {
+                        if (success) {
+                            self.logStore.load({ params: { start: 0, limit: pageSize } });
+                        }
+                    });
+                }
+            }
+        });
+
+        // Load current log level and retention from server
         (function () {
             self.appWin.apiRequest("log", { action: "get_level" }, function (success, data) {
                 if (success && data && data.level) {
@@ -2825,6 +2945,11 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.LogViewer", {
                     if (self.logStore.getCount() > 0) {
                         self.logStore.load({ params: { start: 0, limit: pageSize } });
                     }
+                }
+            });
+            self.appWin.apiRequest("log", { action: "get_retention" }, function (success, data) {
+                if (success && data && data.retention_days !== undefined) {
+                    self.retentionCombo.setValue(String(data.retention_days));
                 }
             });
         }).defer(100);
@@ -2864,6 +2989,9 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.LogViewer", {
                     }
                 }),
                 "->",
+                { xtype: "label", text: SYNO.SDS.iCloudPhotoSync._T("log:label_retention"), style: "font-size: 12px; color: #666; margin-right: 6px;" },
+                this.retentionCombo,
+                { xtype: "tbspacer", width: 12 },
                 { xtype: "label", text: SYNO.SDS.iCloudPhotoSync._T("log:label_level"), style: "font-size: 12px; color: #666; margin-right: 6px;" },
                 this.levelCombo,
                 { xtype: "tbspacer", width: 4 }

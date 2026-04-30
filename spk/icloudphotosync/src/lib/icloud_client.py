@@ -93,7 +93,21 @@ class ICloudClient:
                     msg = m.group(1)
             return {"success": False, "error": msg}
         except Exception as e:
-            logger.exception("Login error")
+            logger.exception("Login error for %s", self.apple_id)
+            import requests.exceptions
+            if isinstance(e, requests.exceptions.ConnectionError):
+                return {"success": False, "error":
+                    "Connection to Apple servers failed. Check DNS settings "
+                    "and network connectivity on this NAS."}
+            if isinstance(e, requests.exceptions.Timeout):
+                return {"success": False, "error":
+                    "Connection to Apple servers timed out. The server may "
+                    "be temporarily unavailable — please try again later."}
+            if isinstance(e, requests.exceptions.SSLError):
+                return {"success": False, "error":
+                    "SSL certificate verification failed. Check that the "
+                    "system date/time is correct and CA certificates are "
+                    "up to date."}
             return {"success": False, "error": "Connection error: %s" % str(e)}
 
     def _restore_session_for_2fa(self):
@@ -203,10 +217,17 @@ class ICloudClient:
                 cookie_directory=self.session_dir,
             )
             if not self.api.data.get("dsInfo"):
-                logger.warning("Session restore returned no account data for %s", self.apple_id)
+                logger.warning("Session restore returned no account data for %s "
+                               "(session dir: %s) — session file may be missing or corrupt",
+                               self.apple_id, self.session_dir)
                 return False
-            return not (self.api.requires_2fa or self.api.requires_2sa)
+            if self.api.requires_2fa or self.api.requires_2sa:
+                logger.info("Session for %s requires re-authentication (2FA/2SA)",
+                            self.apple_id)
+                return False
+            return True
         except Exception:
+            logger.warning("Session restore failed for %s", self.apple_id, exc_info=True)
             return False
 
     def is_authenticated(self):

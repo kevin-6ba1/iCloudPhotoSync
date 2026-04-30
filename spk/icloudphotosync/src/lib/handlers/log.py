@@ -2,11 +2,17 @@
 Log Handler — read sync log entries.
 
 Actions:
-  list   — Get recent log lines (default last 200)
-  clear  — Clear the log file
+  list          — Get recent log lines (default last 200)
+  clear         — Clear the log file
+  get_retention — Get current log retention setting
+  set_retention — Set log retention (days) and trim old entries
+  trim          — Delete log entries older than the configured retention
 """
 import os
+import re
 import sys
+import time
+from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
@@ -24,6 +30,12 @@ def handle(params):
         return _get_level(params)
     if action == "set_level":
         return _set_level(params)
+    if action == "get_retention":
+        return _get_retention(params)
+    if action == "set_retention":
+        return _set_retention(params)
+    if action == "trim":
+        return _trim_logs(params)
 
     return {"success": False, "error": {"code": 101, "message": "Unknown action"}}
 
@@ -49,7 +61,6 @@ def _parse_log_lines(log_dir):
                     message = line
 
                     # Parse: "2026-04-11 19:50:40 [INFO] module: message"
-                    import re
                     m = re.match(r"^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+\[(\w+)\]\s+\S+:\s*(.*)", line)
                     if m:
                         timestamp = m.group(1)
@@ -139,3 +150,69 @@ def _set_level(params):
     cfg["log_level"] = level
     config_manager.save_config(cfg)
     return {"success": True, "data": {"level": level}}
+
+
+_VALID_RETENTION_DAYS = (7, 14, 30, 90, 0)  # 0 = keep all
+
+
+def _get_retention(params):
+    cfg = config_manager.load_config()
+    return {"success": True, "data": {"retention_days": cfg.get("log_retention_days", 7)}}
+
+
+def _set_retention(params):
+    try:
+        days = int(params.getvalue("days", "7"))
+    except (ValueError, TypeError):
+        days = 30
+    if days not in _VALID_RETENTION_DAYS:
+        return {"success": False, "error": {"code": 402, "message": "Invalid retention value"}}
+    cfg = config_manager.load_config()
+    cfg["log_retention_days"] = days
+    config_manager.save_config(cfg)
+    if days > 0:
+        _do_trim(days)
+    return {"success": True, "data": {"retention_days": days}}
+
+
+def _trim_logs(params):
+    cfg = config_manager.load_config()
+    days = cfg.get("log_retention_days", 30)
+    if days <= 0:
+        return {"success": True, "data": {"message": "Retention is unlimited, nothing trimmed", "removed": 0}}
+    removed = _do_trim(days)
+    return {"success": True, "data": {"message": "Trimmed entries older than %d days" % days, "removed": removed}}
+
+
+def _do_trim(days):
+    """Remove log lines older than `days` from all log files. Returns count of removed lines."""
+    cutoff = datetime.now() - timedelta(days=days)
+    cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+    log_dir = os.path.join(config_manager.PKG_VAR, "logs")
+    total_removed = 0
+
+    for lf in ["sync.log", "cron.log"]:
+        path = os.path.join(log_dir, lf)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", errors="replace") as f:
+                lines = f.readlines()
+
+            kept = []
+            for line in lines:
+                m = re.match(r"^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})", line)
+                if m and m.group(1) < cutoff_str:
+                    total_removed += 1
+                else:
+                    kept.append(line)
+
+            if total_removed > 0:
+                tmp = path + ".tmp"
+                with open(tmp, "w") as f:
+                    f.writelines(kept)
+                os.replace(tmp, path)
+        except Exception:
+            pass
+
+    return total_removed

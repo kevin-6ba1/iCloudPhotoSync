@@ -99,7 +99,8 @@ class PyiCloudSession(Session):
                     pass
             os.replace(tmp, self.service.session_path)
         except Exception:
-            pass
+            LOGGER.warning("Failed to save session data to %s",
+                           self.service.session_path, exc_info=True)
 
         # Save cookies
         try:
@@ -109,7 +110,8 @@ class PyiCloudSession(Session):
             except OSError:
                 pass
         except Exception:
-            pass
+            LOGGER.warning("Failed to save cookies to %s",
+                           self.cookies.filename, exc_info=True)
 
         if not response.ok and (
             content_type not in json_mimetypes or response.status_code in [421, 450, 500]

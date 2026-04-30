@@ -154,7 +154,8 @@ class PyiCloudService:
 
         if not login_successful:
             if not self._password:
-                LOGGER.debug("No password provided")
+                LOGGER.info("No password provided and no valid session token — "
+                            "re-authentication required for %s", self.apple_id)
                 return
 
             self.password_filter = PyiCloudPasswordFilter(self._password)

@@ -198,7 +198,30 @@ def _run_account(account_id):
             _running.pop(account_id, None)
 
 
+_last_log_trim = 0
+
+
+def _maybe_trim_logs():
+    """Trim old log entries once per day based on configured retention."""
+    global _last_log_trim
+    now = time.time()
+    if now - _last_log_trim < 86400:
+        return
+    _last_log_trim = now
+    try:
+        cfg = config_manager.load_config()
+        days = cfg.get("log_retention_days", 7)
+        if days > 0:
+            from handlers import log as log_handler
+            removed = log_handler._do_trim(days)
+            if removed > 0:
+                LOGGER.info("Log rotation: removed %d entries older than %d days", removed, days)
+    except Exception:
+        LOGGER.debug("Log trim failed", exc_info=True)
+
+
 def _tick():
+    _maybe_trim_logs()
     for acc in config_manager.get_accounts():
         try:
             _check_auth_notifications(acc)

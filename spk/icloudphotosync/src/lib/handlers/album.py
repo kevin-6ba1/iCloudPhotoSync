@@ -149,6 +149,7 @@ def _list_albums(params):
 
     try:
         photos_svc = client.api.photos
+        photos_svc.refresh_albums()
         albums = photos_svc.albums
 
         album_list = []
