@@ -233,6 +233,7 @@ PKG_VAR="${SYNOPKG_PKGVAR:-/var/packages/iCloudPhotoSync/var}"
 mkdir -p "$PKG_VAR/accounts" "$PKG_VAR/logs"
 [ -f "$PKG_VAR/config.json" ] || \
     echo '{"accounts": [], "default_target_dir": "/volume1/iCloudPhotos"}' > "$PKG_VAR/config.json"
+chown -R iCloudPhotoSync:iCloudPhotoSync "$PKG_VAR" 2>/dev/null || true
 # Allow CGI to grant share access without package restart
 echo "iCloudPhotoSync ALL=(root) NOPASSWD: /usr/syno/sbin/synoshare" > /etc/sudoers.d/iCloudPhotoSync
 chmod 440 /etc/sudoers.d/iCloudPhotoSync
@@ -271,6 +272,8 @@ EOF
 # postupgrade
 cat > "$BUILD_DIR/scripts/postupgrade" <<'EOF'
 #!/bin/sh
+PKG_VAR="${SYNOPKG_PKGVAR:-/var/packages/iCloudPhotoSync/var}"
+chown -R iCloudPhotoSync:iCloudPhotoSync "$PKG_VAR" 2>/dev/null || true
 # Ensure sudoers entry exists (may be missing from older versions)
 echo "iCloudPhotoSync ALL=(root) NOPASSWD: /usr/syno/sbin/synoshare" > /etc/sudoers.d/iCloudPhotoSync
 chmod 440 /etc/sudoers.d/iCloudPhotoSync

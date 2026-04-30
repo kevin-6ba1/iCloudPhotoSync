@@ -83,21 +83,20 @@ class PyiCloudSession(Session):
             if response.headers.get(header):
                 self.service.session_data[value] = response.headers.get(header)
 
-        # Save session_data to file. Atomic write because multiple CGI
-        # handlers may invoke API calls concurrently for the same account
-        # — a half-written session file means the next request loses the
-        # trust token and the user gets bounced to re-auth.
         try:
-            tmp = self.service.session_path + ".tmp"
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
+            os.makedirs(os.path.dirname(self.service.session_path),
+                        mode=0o700, exist_ok=True)
+            with open(self.service.session_path, "w", encoding="utf-8") as f:
                 json.dump(self.service.session_data, f)
                 f.flush()
                 try:
                     os.fsync(f.fileno())
                 except OSError:
                     pass
-            os.replace(tmp, self.service.session_path)
+            try:
+                os.chmod(self.service.session_path, 0o600)
+            except OSError:
+                pass
         except Exception:
             LOGGER.warning("Failed to save session data to %s",
                            self.service.session_path, exc_info=True)
