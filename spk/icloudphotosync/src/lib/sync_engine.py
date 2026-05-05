@@ -6,6 +6,7 @@ for folder structure. Always fetches the live photo list from Apple
 (never relies on cached album counts).
 """
 import contextlib
+import errno
 import fcntl
 import logging
 import os
@@ -22,6 +23,121 @@ import sync_manifest
 import heic_converter
 
 LOGGER = logging.getLogger("sync_engine")
+
+
+def _remove_album_from_cache(account_id, album_name):
+    """Remove a stale album from the album_cache.json."""
+    try:
+        cache_path = os.path.join(config_manager.get_account_dir(account_id), "album_cache.json")
+        with open(cache_path, "r") as f:
+            cache = json.load(f)
+        changed = False
+        for key in ("counts", "types", "parents"):
+            if album_name in cache.get(key, {}):
+                cache[key].pop(album_name)
+                changed = True
+        if changed:
+            cache["updated"] = int(time.time())
+            with open(cache_path, "w") as f:
+                json.dump(cache, f)
+            LOGGER.info("Removed stale album %r from cache", album_name)
+    except Exception:
+        pass
+
+
+LIBRARY_DIR_PERSONAL = "Meine Mediathek"
+LIBRARY_DIR_SHARED = "Geteilte Mediathek"
+
+# Old top-level folder names (pre-migration structure)
+_OLD_TOPLEVEL_DIRS = ("Photostream", "Albums", "Shared Library")
+
+
+def _migrate_to_library_structure(target_dir, account_id):
+    """Migrate old flat structure to library-based subfolder structure.
+
+    Old:  target_dir/Photostream/..., target_dir/Albums/...
+    New:  target_dir/Meine Mediathek/Photostream/..., target_dir/Meine Mediathek/Albums/...
+    """
+    marker_file = os.path.join(target_dir, ".library_migrated")
+    if os.path.exists(marker_file):
+        return
+
+    personal_dir = os.path.join(target_dir, LIBRARY_DIR_PERSONAL)
+    moved_something = False
+
+    for old_name in ("Photostream", "Albums"):
+        old_path = os.path.join(target_dir, old_name)
+        if os.path.isdir(old_path):
+            _makedirs_safe(personal_dir)
+            new_path = os.path.join(personal_dir, old_name)
+            if not os.path.exists(new_path):
+                LOGGER.info("Migration: moving %s -> %s", old_path, new_path)
+                os.rename(old_path, new_path)
+                moved_something = True
+
+    # Move "Shared Library" -> "Geteilte Mediathek/Photostream"
+    old_sl = os.path.join(target_dir, "Shared Library")
+    if os.path.isdir(old_sl):
+        shared_dir = os.path.join(target_dir, LIBRARY_DIR_SHARED)
+        new_sl = os.path.join(shared_dir, "Photostream")
+        if not os.path.exists(new_sl):
+            _makedirs_safe(shared_dir)
+            LOGGER.info("Migration: moving %s -> %s", old_sl, new_sl)
+            os.rename(old_sl, new_sl)
+            moved_something = True
+
+    if moved_something:
+        # Update all manifest paths with new prefix
+        try:
+            conn = sync_manifest._connect(account_id)
+            try:
+                rows = conn.execute(
+                    "SELECT rowid, local_path FROM synced_photos"
+                ).fetchall()
+                updates = []
+                for row in rows:
+                    path = row["local_path"]
+                    new_path = _migrate_path(path, target_dir)
+                    if new_path != path:
+                        updates.append((new_path, row["rowid"]))
+                if updates:
+                    conn.executemany(
+                        "UPDATE synced_photos SET local_path=? WHERE rowid=?",
+                        updates
+                    )
+                    conn.commit()
+                    LOGGER.info("Migration: updated %d manifest paths", len(updates))
+            finally:
+                conn.close()
+        except Exception:
+            LOGGER.exception("Migration: failed to update manifest paths")
+
+    # Write marker so we don't run again
+    try:
+        with open(marker_file, "w") as f:
+            f.write("migrated at %s\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
+    except Exception:
+        pass
+
+
+def _migrate_path(path, target_dir):
+    """Rewrite a single manifest path from old to new structure."""
+    if not path.startswith(target_dir):
+        return path
+    rel = path[len(target_dir):].lstrip(os.sep)
+    parts = rel.split(os.sep)
+    if not parts:
+        return path
+    first = parts[0]
+    if first in ("Photostream", "Albums"):
+        return os.path.join(target_dir, LIBRARY_DIR_PERSONAL, rel)
+    if first == "Shared Library":
+        new_rel = os.path.join(LIBRARY_DIR_SHARED, "Photostream", *parts[1:])
+        return os.path.join(target_dir, new_rel)
+    if first == "Shared":
+        # Shared albums stay as-is (already in their own folder)
+        return path
+    return path
 
 
 def _sanitize_path_component(name):
@@ -47,7 +163,10 @@ def _safe_join(base, *parts):
 
 
 def _makedirs_safe(path, mode=0o755):
-    """Create directories without following symlinks in intermediate components."""
+    """Create directories without following symlinks in intermediate components.
+
+    Raises _DiskFullError on ENOSPC/EDQUOT so callers can abort early.
+    """
     parts = []
     head = path
     while True:
@@ -64,12 +183,40 @@ def _makedirs_safe(path, mode=0o755):
         if os.path.islink(current):
             os.remove(current)
         if not os.path.isdir(current):
-            os.mkdir(current, mode)
+            try:
+                os.mkdir(current, mode)
+            except OSError as e:
+                if _is_disk_full_error(e):
+                    raise _DiskFullError(str(e)) from e
+                raise
 
 
 class _UrlExpiredError(Exception):
     """Raised when an iCloud CDN URL returns 410 Gone (expired)."""
     pass
+
+
+_URL_EXPIRY_BUFFER = 300  # refresh URLs expiring within 5 minutes
+
+
+def _url_expiry_time(url):
+    """Extract the expiry unix timestamp from an iCloud CDN URL's 'e=' param.
+
+    Returns the timestamp as int, or 0 if not parseable.
+    """
+    if not url:
+        return 0
+    try:
+        start = url.find("&e=")
+        if start < 0:
+            start = url.find("?e=")
+        if start < 0:
+            return 0
+        start += 3
+        end = url.find("&", start)
+        return int(url[start:end] if end > start else url[start:])
+    except (ValueError, IndexError):
+        return 0
 
 
 # Network retry settings
@@ -87,14 +234,36 @@ def _check_connectivity():
         return False
 
 
+class _DiskFullError(Exception):
+    """Raised when ENOSPC is detected during download."""
+    pass
+
+
+_DISK_FULL_ERRNOS = frozenset([
+    errno.ENOSPC,    # 28 — No space left on device
+    errno.EDQUOT,    # 122 — Disk quota exceeded
+])
+
+
+def _is_disk_full_error(exc):
+    """Return True if the exception indicates disk/quota exhaustion."""
+    if isinstance(exc, OSError) and getattr(exc, "errno", None) in _DISK_FULL_ERRNOS:
+        return True
+    return False
+
+
 def _is_connection_error(exc):
     """Return True if the exception indicates a real connectivity problem."""
     if isinstance(exc, requests.exceptions.ConnectionError):
         return True
     if isinstance(exc, requests.exceptions.Timeout):
         return True
-    if isinstance(exc, (OSError, IOError)):
-        return True
+    if isinstance(exc, OSError):
+        if getattr(exc, "errno", None) in _DISK_FULL_ERRNOS:
+            return False
+        if isinstance(exc, (ConnectionRefusedError, ConnectionResetError,
+                            ConnectionAbortedError, BrokenPipeError)):
+            return True
     return False
 
 
@@ -181,6 +350,8 @@ def _download_file(url, dest_path, session=None):
     Writes to dest_path + ".part" first, then atomically renames on success.
     A partial download therefore can never be mistaken for a complete file
     by the next sync's existence check.
+
+    Raises _DiskFullError immediately on ENOSPC/EDQUOT (no retry).
     """
     dest_dir = os.path.dirname(dest_path)
     _makedirs_safe(dest_dir)
@@ -220,6 +391,12 @@ def _download_file(url, dest_path, session=None):
                 pass
             raise
         except Exception as e:
+            if _is_disk_full_error(e):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+                raise _DiskFullError(str(e)) from e
             last_err = e
             try:
                 os.remove(tmp_path)
@@ -329,6 +506,12 @@ def _resolve_target_dir(path, account_id=None):
     if not path:
         return path
     if path.startswith("/volume"):
+        # Verify the volume mountpoint actually exists to prevent
+        # writing to the root filesystem (system partition).
+        parts = path.split("/")
+        volume_mount = "/" + parts[1]  # e.g. "/volume1"
+        if not os.path.ismount(volume_mount):
+            return "__INVALID_VOLUME__:" + path
         return path
 
     # /home/... is a per-user virtual share -- maps to <volume>/homes/<user>/...
@@ -644,6 +827,19 @@ def _run_sync_locked(account_id):
     raw_target = sync_config.get("target_dir", config_manager.DEFAULT_VOLUME + "/iCloudPhotos")
     target_dir = _resolve_target_dir(raw_target, account_id)
 
+    if isinstance(target_dir, str) and target_dir.startswith("__INVALID_VOLUME__:"):
+        volume_path = target_dir.split(":", 1)[1]
+        progress.status = "error"
+        progress.error = (
+            "The volume in %r does not exist on this NAS. "
+            "Please go to Settings and select a valid target folder "
+            "(e.g. %s/iCloudPhotos). Syncing to a non-existent volume "
+            "would write to the system partition and fill it up."
+        ) % (volume_path, config_manager.DEFAULT_VOLUME)
+        LOGGER.error("Target volume does not exist: %s", volume_path)
+        progress.save()
+        return progress
+
     if isinstance(target_dir, str) and target_dir.startswith("__UNRESOLVED_HOME__:"):
         progress.status = "error"
         progress.error = (
@@ -672,6 +868,9 @@ def _run_sync_locked(account_id):
         ) % target_dir
         progress.save()
         return progress
+
+    # Migrate old flat structure to library-based structure
+    _migrate_to_library_structure(target_dir, account_id)
 
     # Authenticate
     client = icloud_client.get_client(account_id, account["apple_id"])
@@ -755,6 +954,7 @@ def _run_sync_locked(account_id):
                             "Album %r not found in iCloud — it may have been "
                             "renamed, deleted, or contains special characters "
                             "that changed during encoding. Skipping.", name)
+                        _remove_album_from_cache(account_id, name)
                         return (0, 0)
                     if alb.album_type == "folder":
                         return (0, 0)
@@ -777,33 +977,35 @@ def _run_sync_locked(account_id):
                     sub = _sanitize_path_component(name)
                 plan.append((name, "albums", sub, count, latest))
 
-        if sync_config.get("shared_albums", {}).get("enabled", False):
-            selected_shared = sync_config.get("shared_albums", {}).get("selected", {})
-            enabled_shared = [name for name, en in selected_shared.items() if en]
-            if enabled_shared:
-                try:
-                    shared = photos_svc.shared_albums
-                    for name in enabled_shared:
-                        alb = shared.get(name)
-                        if alb:
-                            try:
-                                count = alb.photo_count or 0
-                            except Exception:
-                                count = 0
-                            plan.append((name, "shared_albums", _sanitize_path_component(name), count, 0))
-                except Exception:
-                    LOGGER.exception("Failed to plan shared albums")
-
-        if sync_config.get("shared_library", {}).get("enabled", False):
+        if photos_svc.has_shared_library:
             try:
                 sl_album = photos_svc.shared_library
                 if sl_album:
                     sl_count = sl_album.photo_count or 0
-                    plan.append(("Shared Library", "shared_library", "", sl_count, 0))
-                else:
-                    LOGGER.info("Shared Library enabled but no SharedSync zone found for account %s", account_id)
+                    plan.append(("All Photos", "shared_library", "", sl_count, 0))
             except Exception:
                 LOGGER.exception("Failed to plan shared library")
+
+            # Shared Library user albums
+            sl_selected = sync_config.get("shared_library", {}).get("selected", {})
+            sl_enabled = [name for name, en in sl_selected.items() if en and name != "All Photos"]
+            if sl_enabled:
+                try:
+                    sl_albums = photos_svc.shared_library_albums
+                    for name in sl_enabled:
+                        alb = sl_albums.get(name)
+                        if alb and alb.album_type != "folder":
+                            try:
+                                count = alb.photo_count or 0
+                            except Exception:
+                                count = 0
+                            if alb.parent_folder:
+                                sub = os.path.join(_sanitize_path_component(alb.parent_folder), _sanitize_path_component(name))
+                            else:
+                                sub = _sanitize_path_component(name)
+                            plan.append((name, "shared_library_albums", sub, count, 0))
+                except Exception:
+                    LOGGER.exception("Failed to plan shared library albums")
 
         progress.total_photos = sum(p[3] for p in plan)
 
@@ -869,17 +1071,20 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
 
     if folder_key == "shared_library":
         album = photos_svc.shared_library
-    elif folder_key == "shared_albums":
-        album = photos_svc.shared_albums.get(album_name)
+    elif folder_key == "shared_library_albums":
+        album = photos_svc.shared_library_albums.get(album_name)
     else:
         album = photos_svc.albums.get(album_name)
     if not album:
         LOGGER.warning("Album not found: %s", album_name)
         return heic_convert_failures
 
-    # Get folder structure config for this type
-    folder_config = sync_config.get(folder_key, {})
-    folder_structure = folder_config.get("folder_structure", "year_month" if folder_key == "photostream" else "flat")
+    # Get folder structure config for this type (shared library uses photostream settings)
+    if folder_key in ("shared_library", "shared_library_albums"):
+        folder_config = sync_config.get("photostream", {})
+    else:
+        folder_config = sync_config.get(folder_key, {})
+    folder_structure = folder_config.get("folder_structure", "year_month" if folder_key in ("photostream", "shared_library", "shared_library_albums") else "flat")
     folder_builder = FOLDER_BUILDERS.get(folder_structure, FOLDER_BUILDERS["flat"])
 
     # total_photos is set upfront in run_sync from the plan — don't
@@ -918,10 +1123,11 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
         "exists_time": 0.0,  # cumulative time spent in those exists calls
     }
     progress_lock = threading.Lock()
+    disk_full_abort = [False]
 
     def _process_batch(photos, offset_for_log):
         """Run dedup, conflict, hardlink, and download for one batch."""
-        if not photos:
+        if not photos or disk_full_abort[0]:
             return
         perf["pairs"] += len(photos)
         perf["batches"] += 1
@@ -966,13 +1172,13 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                 filename = _build_filename(photo, sync_config)
 
                 if folder_key == "shared_library":
-                    dest_dir = os.path.join(target_dir, "Shared Library", date_subfolder)
-                elif folder_key == "shared_albums":
-                    dest_dir = os.path.join(target_dir, "Shared", subfolder, date_subfolder)
+                    dest_dir = os.path.join(target_dir, LIBRARY_DIR_SHARED, "Photostream", date_subfolder)
+                elif folder_key == "shared_library_albums":
+                    dest_dir = os.path.join(target_dir, LIBRARY_DIR_SHARED, "Albums", subfolder, date_subfolder)
                 elif subfolder:
-                    dest_dir = os.path.join(target_dir, "Albums", subfolder, date_subfolder)
+                    dest_dir = os.path.join(target_dir, LIBRARY_DIR_PERSONAL, "Albums", subfolder, date_subfolder)
                 else:
-                    dest_dir = os.path.join(target_dir, "Photostream", date_subfolder)
+                    dest_dir = os.path.join(target_dir, LIBRARY_DIR_PERSONAL, "Photostream", date_subfolder)
 
                 if sync_config.get("format_folders"):
                     ext = os.path.splitext(filename)[1].upper().lstrip(".")
@@ -1063,20 +1269,25 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
             )
 
         def _process(task):
-            """Returns (photo, fname, fpath, ok, is_conn_error, is_url_expired)."""
+            """Returns (photo, fname, fpath, ok, is_conn_error, is_url_expired, is_disk_full)."""
             photo, url, fpath, fname = task
             if should_stop(account_id):
-                return (photo, fname, fpath, False, False, False)
+                return (photo, fname, fpath, False, False, False, False)
+            expiry = _url_expiry_time(url)
+            if expiry and expiry < int(time.time()):
+                return (photo, fname, fpath, False, False, True, False)
             try:
                 ok = _download_file(url, fpath, session=session)
             except _UrlExpiredError:
-                return (photo, fname, fpath, False, False, True)
+                return (photo, fname, fpath, False, False, True, False)
+            except _DiskFullError:
+                return (photo, fname, fpath, False, False, False, True)
             except Exception as e:
                 if _is_connection_error(e):
-                    return (photo, fname, fpath, False, True, False)
-                return (photo, fname, fpath, False, False, False)
+                    return (photo, fname, fpath, False, True, False, False)
+                return (photo, fname, fpath, False, False, False, False)
             if not ok:
-                return (photo, fname, fpath, False, False, False)
+                return (photo, fname, fpath, False, False, False, False)
             if formats in ("jpg_only", "both") and heic_converter.is_heic(fname):
                 if heic_converter.can_convert():
                     jpg_path = heic_converter.convert_to_jpg(fpath, quality=jpg_quality)
@@ -1090,14 +1301,64 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                     else:
                         LOGGER.warning("HEIC conversion failed for %s", fname)
                         heic_convert_failures.append(fname)
-            return (photo, fname, fpath, True, False, False)
+            return (photo, fname, fpath, True, False, False, False)
 
-        pending_tasks = list(tasks)
+        # Proactive URL refresh: if URLs are expired or expiring within the
+        # buffer window, refresh them BEFORE starting downloads to avoid a
+        # cascade of 410 errors when a large album's URLs all share one expiry.
+        now = int(time.time())
+        expiring_tasks = []
+        valid_tasks = []
+        for task in tasks:
+            photo, url, fpath, fname = task
+            expiry = _url_expiry_time(url)
+            if expiry and expiry < now + _URL_EXPIRY_BUFFER:
+                expiring_tasks.append(task)
+            else:
+                valid_tasks.append(task)
+
+        if expiring_tasks and not should_stop(account_id):
+            LOGGER.info("Proactive refresh: %d/%d URLs expired or expiring soon",
+                        len(expiring_tasks), len(tasks))
+            refresh_photos = [t[0] for t in expiring_tasks]
+            zone_id = (photos_svc._detect_shared_library_zone()
+                       if folder_key == "shared_library" else None)
+            fresh_urls = {}
+            try:
+                fresh_urls = photos_svc.batch_refresh_photo_urls(
+                    refresh_photos, zone_id=zone_id)
+            except Exception:
+                LOGGER.warning("Proactive batch refresh failed, attempting re-auth...")
+                try:
+                    if client and client.restore_session():
+                        photos_svc.session = client.api.session
+                        fresh_urls = photos_svc.batch_refresh_photo_urls(
+                            refresh_photos, zone_id=zone_id)
+                except Exception:
+                    LOGGER.exception("Proactive refresh failed after re-auth")
+
+            refreshed = 0
+            for photo, _old_url, fpath, fname in expiring_tasks:
+                new_url = fresh_urls.get(photo.id)
+                if new_url:
+                    valid_tasks.append((photo, new_url, fpath, fname))
+                    refreshed += 1
+                else:
+                    progress.failed_photos += 1
+            if refreshed:
+                LOGGER.info("Proactively refreshed %d/%d expired URLs",
+                            refreshed, len(expiring_tasks))
+            elif expiring_tasks:
+                LOGGER.warning("Proactive refresh returned 0 fresh URLs for %d photos",
+                               len(expiring_tasks))
+            progress.save()
+
+        pending_tasks = list(valid_tasks)
         net_retries_used = 0
         url_refresh_used = 0
         _URL_REFRESH_MAX = 3
 
-        while pending_tasks and not should_stop(account_id):
+        while pending_tasks and not should_stop(account_id) and not disk_full_abort[0]:
             pool = ThreadPoolExecutor(max_workers=workers)
             conn_retry_tasks = []
             expired_tasks = []
@@ -1107,13 +1368,24 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
             try:
                 futures = [pool.submit(_process, t) for t in pending_tasks]
                 for fut in as_completed(futures):
-                    if should_stop(account_id):
+                    if should_stop(account_id) or disk_full_abort[0]:
                         for f in futures:
                             f.cancel()
                         break
-                    photo, fname, fpath, ok, is_conn_err, is_url_expired = fut.result()
+                    photo, fname, fpath, ok, is_conn_err, is_url_expired, is_disk_full = fut.result()
                     with progress_lock:
-                        if ok:
+                        if is_disk_full:
+                            disk_full_abort[0] = True
+                            progress.failed_photos += 1
+                            LOGGER.error(
+                                "Disk full (ENOSPC/EDQUOT) — aborting album '%s'. "
+                                "Check available space, inode usage, and folder/user quotas.",
+                                album_name)
+                            progress.error = "Disk full — sync aborted"
+                            for f in futures:
+                                f.cancel()
+                            break
+                        elif ok:
                             consecutive_fails = 0
                             if sync_manifest.mark_synced(
                                 account_id, photo.id, album_name, fname, fpath,
@@ -1141,6 +1413,10 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                         progress.save_throttled()
             finally:
                 pool.shutdown(wait=True)
+
+            if disk_full_abort[0]:
+                progress.save()
+                return
 
             # Batch-refresh expired CDN URLs
             refresh_retry_tasks = []
@@ -1274,7 +1550,7 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
 
         LOGGER.info("Multi-track fetch: %d producers over %d photos", len(threads), total)
         remaining = len(threads)
-        while remaining > 0 and not should_stop(account_id):
+        while remaining > 0 and not should_stop(account_id) and not disk_full_abort[0]:
             _t_wait = time.time()
             item = q.get()
             perf["fetch_wait"] += time.time() - _t_wait
@@ -1309,7 +1585,7 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
         fetch_pool = ThreadPoolExecutor(max_workers=1)
         next_future = fetch_pool.submit(_fetch_with_retry, batch_size, offset, direction)
 
-        while not should_stop(account_id):
+        while not should_stop(account_id) and not disk_full_abort[0]:
             _t_wait = time.time()
             photos = next_future.result()
             perf["fetch_wait"] += time.time() - _t_wait
@@ -1325,7 +1601,7 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
 
             _process_batch(photos, offset)
 
-            if should_stop(account_id):
+            if should_stop(account_id) or disk_full_abort[0]:
                 break
             offset = next_offset
 

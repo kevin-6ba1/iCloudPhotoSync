@@ -3,7 +3,7 @@
 set -euo pipefail
 
 PKG_NAME="iCloudPhotoSync"
-PKG_VER="1.4.6"
+PKG_VER="1.5.0"
 PKG_REV="1"
 DISPLAY_NAME="iCloud Photo Sync"
 DESCRIPTION="Automatically mirrors your iCloud photo library to a Synology NAS."
@@ -234,8 +234,11 @@ mkdir -p "$PKG_VAR/accounts" "$PKG_VAR/logs"
 [ -f "$PKG_VAR/config.json" ] || \
     echo '{"accounts": [], "default_target_dir": "/volume1/iCloudPhotos"}' > "$PKG_VAR/config.json"
 chown -R iCloudPhotoSync:iCloudPhotoSync "$PKG_VAR" 2>/dev/null || true
-# Allow CGI to grant share access without package restart
-echo "iCloudPhotoSync ALL=(root) NOPASSWD: /usr/syno/sbin/synoshare" > /etc/sudoers.d/iCloudPhotoSync
+# Allow CGI to grant share access and self-update without package restart
+cat > /etc/sudoers.d/iCloudPhotoSync <<'SUDOEOF'
+iCloudPhotoSync ALL=(root) NOPASSWD: /usr/syno/sbin/synoshare
+iCloudPhotoSync ALL=(root) NOPASSWD: /usr/syno/bin/synopkg install /tmp/ics_update_*
+SUDOEOF
 chmod 440 /etc/sudoers.d/iCloudPhotoSync
 # Clean legacy artifacts
 rm -f /etc/cron.d/iCloudPhotoSync 2>/dev/null || true
@@ -275,7 +278,10 @@ cat > "$BUILD_DIR/scripts/postupgrade" <<'EOF'
 PKG_VAR="${SYNOPKG_PKGVAR:-/var/packages/iCloudPhotoSync/var}"
 chown -R iCloudPhotoSync:iCloudPhotoSync "$PKG_VAR" 2>/dev/null || true
 # Ensure sudoers entry exists (may be missing from older versions)
-echo "iCloudPhotoSync ALL=(root) NOPASSWD: /usr/syno/sbin/synoshare" > /etc/sudoers.d/iCloudPhotoSync
+cat > /etc/sudoers.d/iCloudPhotoSync <<'SUDOEOF'
+iCloudPhotoSync ALL=(root) NOPASSWD: /usr/syno/sbin/synoshare
+iCloudPhotoSync ALL=(root) NOPASSWD: /usr/syno/bin/synopkg install /tmp/ics_update_*
+SUDOEOF
 chmod 440 /etc/sudoers.d/iCloudPhotoSync
 rm -f /etc/cron.d/iCloudPhotoSync 2>/dev/null || true
 exit 0

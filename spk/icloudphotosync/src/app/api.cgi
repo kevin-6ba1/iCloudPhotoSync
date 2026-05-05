@@ -28,6 +28,7 @@ from handlers import sync as sync_handler
 from handlers import config as config_handler
 from handlers import log as log_handler
 from handlers import move as move_handler
+from handlers import update as update_handler
 
 HANDLERS = {
     "status": status_handler.handle,
@@ -38,6 +39,7 @@ HANDLERS = {
     "config": config_handler.handle,
     "log": log_handler.handle,
     "move": move_handler.handle,
+    "update": update_handler.handle,
 }
 
 

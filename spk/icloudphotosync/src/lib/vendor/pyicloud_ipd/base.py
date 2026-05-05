@@ -189,10 +189,30 @@ class PyiCloudService:
             ) from error
 
         domain_to_use = self.data.get("domainToUse")
-        if domain_to_use is not None:
+        if domain_to_use is not None and domain_to_use != self.domain:
+            LOGGER.info("Apple requires domain '%s', switching from '%s'",
+                        domain_to_use, self.domain)
+            self._switch_domain(domain_to_use)
+
+    def _switch_domain(self, new_domain):
+        """Switch to a different iCloud domain and re-authenticate."""
+        if getattr(self, '_domain_switched', False):
             raise PyiCloudConnectionException(
-                "Apple insists on using %s. Please use --domain parameter" % domain_to_use
-            )
+                "Domain redirect loop: Apple keeps switching domains")
+        self._domain_switched = True
+        if new_domain == "cn":
+            self.AUTH_ENDPOINT = "https://idmsa.apple.com.cn/appleauth/auth"
+            self.HOME_ENDPOINT = "https://www.icloud.com.cn"
+            self.SETUP_ENDPOINT = "https://setup.icloud.com.cn/setup/ws/1"
+        elif new_domain == "com":
+            self.AUTH_ENDPOINT = AUTH_ENDPOINT
+            self.HOME_ENDPOINT = HOME_ENDPOINT
+            self.SETUP_ENDPOINT = SETUP_ENDPOINT
+        else:
+            raise PyiCloudConnectionException(
+                "Apple requires unsupported domain '%s'" % new_domain)
+        self.domain = new_domain
+        self._authenticate_with_token()
 
     def _authenticate_srp(self, password):
         """SRP (Secure Remote Password) authentication with Apple."""

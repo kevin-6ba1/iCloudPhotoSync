@@ -319,11 +319,6 @@ def get_sync_config(account_id):
             "selected": {},  # album_name -> True/False
             "deduplicate_hardlinks": True,  # hardlink instead of re-downloading duplicates
         },
-        "shared_albums": {
-            "enabled": False,
-            "folder_structure": "flat",
-            "selected": {},
-        },
         "shared_library": {
             "enabled": False,
             "folder_structure": "year_month",
@@ -367,10 +362,3 @@ def set_album_sync(account_id, album_name, enabled):
     return config
 
 
-def set_shared_album_sync(account_id, album_name, enabled):
-    """Toggle sync for a shared album."""
-    with _locked(_sync_config_path(account_id) + ".lock"):
-        config = get_sync_config(account_id)
-        config.setdefault("shared_albums", {}).setdefault("selected", {})[album_name] = enabled
-        save_sync_config(account_id, config)
-    return config

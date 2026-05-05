@@ -264,6 +264,12 @@ def _set_config(params):
         if resolved.startswith("/home/") or resolved == "/home":
             return {"success": False, "error": {"code": 304,
                 "message": "Cannot resolve home path — DSM username unknown. Pick a shared folder or reopen the app."}}
+        if resolved.startswith("/volume"):
+            vol_mount = "/" + resolved.split("/")[1]
+            if not os.path.ismount(vol_mount):
+                return {"success": False, "error": {"code": 305,
+                    "message": "Volume %s does not exist on this NAS. "
+                    "Please select a folder on an existing volume." % vol_mount}}
         updates["target_dir"] = resolved
 
     current = config_manager.get_sync_config(account_id)
@@ -322,8 +328,5 @@ def _set_album(params):
     enabled = params.getvalue("enabled", "true").strip().lower() in ("true", "1", "yes")
     album_type = params.getvalue("album_type", "user").strip()
 
-    if album_type == "shared":
-        config = config_manager.set_shared_album_sync(account_id, album_name, enabled)
-    else:
-        config = config_manager.set_album_sync(account_id, album_name, enabled)
+    config = config_manager.set_album_sync(account_id, album_name, enabled)
     return {"success": True, "data": {"album": album_name, "enabled": enabled}}
