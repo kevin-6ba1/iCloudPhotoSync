@@ -10,7 +10,7 @@ UNSUPPORTED_ARCHS = $(OLD_PPC_ARCHS) $(ARMv5_ARCHS)
 MAINTAINER     = Pascal Pagel
 DESCRIPTION    = Automatically mirrors your iCloud photo library to a Synology NAS. Supports multi-account setups, incremental sync, album selection, HEIC conversion, and scheduled operation.
 DISPLAY_NAME   = iCloud Photo Sync
-CHANGELOG      = Library tree view (personal + shared library with full album support), fix shared album photo fetching, automatic migration to library-based folder structure.
+CHANGELOG      = Fix Chinese iCloud accounts (iCloud.com.cn domain normalization).
 
 HOMEPAGE   = https://github.com/Euphonique/iCloudPhotoSync
 LICENSE    = MIT

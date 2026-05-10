@@ -188,11 +188,23 @@ class PyiCloudService:
                 "Invalid authentication token.", error
             ) from error
 
-        domain_to_use = self.data.get("domainToUse")
+        domain_to_use = self._normalize_domain(self.data.get("domainToUse"))
         if domain_to_use is not None and domain_to_use != self.domain:
             LOGGER.info("Apple requires domain '%s', switching from '%s'",
                         domain_to_use, self.domain)
             self._switch_domain(domain_to_use)
+
+    @staticmethod
+    def _normalize_domain(domain_value):
+        """Normalize Apple's domainToUse response to 'com' or 'cn'."""
+        if domain_value is None:
+            return None
+        d = domain_value.lower()
+        if ".cn" in d:
+            return "cn"
+        if "icloud.com" in d or d == "com":
+            return "com"
+        return domain_value
 
     def _switch_domain(self, new_domain):
         """Switch to a different iCloud domain and re-authenticate."""
