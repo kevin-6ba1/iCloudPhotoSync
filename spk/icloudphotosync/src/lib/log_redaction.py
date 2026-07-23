@@ -5,10 +5,10 @@ Vendored pyicloud_ipd exceptions can embed raw Apple API response bodies
 response.text, str(response.status_code))` on a failed SRP login init)
 and Apple ID emails (vendor/pyicloud_ipd/exceptions.py:
 PyiCloud2SARequiredException embeds `apple_id` directly in its message).
-Any code that logs an exception's message or traceback must go through
-this module first — CLAUDE.md forbids passwords, 2FA codes, cookies,
-tokens, and personal email addresses in logs, and forbids ad-hoc
-per-line redaction in favor of central functions.
+Passwords, 2FA codes, cookies, tokens, and personal email addresses must
+never appear in logs, and redaction must go through central functions
+rather than ad-hoc per-line logic — any code that logs an exception's
+message or traceback must go through this module first.
 """
 import re
 import traceback
@@ -33,9 +33,8 @@ _HEADER_RE = re.compile(
 def mask_email(email):
     """Partially mask an email address: 'k***@example.invalid'.
 
-    Matches the exact display format CLAUDE.md specifies for logged
-    Apple IDs — first character of the local part, then '***@', then
-    the domain unchanged.
+    First character of the local part, then '***@', then the domain
+    unchanged — Apple IDs are never logged in full.
     """
     if not email or "@" not in email:
         return "[REDACTED]"
