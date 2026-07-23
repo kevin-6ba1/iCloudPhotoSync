@@ -241,6 +241,9 @@ success_sms_sent	=	"SMS gesendet! Gib den Code ein."
 error_sms_failed	=	"SMS konnte nicht gesendet werden"
 status_verifying	=	"Prüfe Code..."
 error_invalid_code	=	"Ungültiger Code. Bitte erneut versuchen."
+title_folder	=	"Zielordner wählen"
+instruction_folder	=	"Wähle, wo deine Fotos auf diesem NAS gespeichert werden. Du kannst dies später in den Einstellungen ändern."
+btn_finish	=	"Fertigstellen"
 
 [about]
 checking_update	=	"Suche nach Updates…"
