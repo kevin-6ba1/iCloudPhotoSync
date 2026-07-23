@@ -5,6 +5,7 @@ rsc:bin/move_runner.py
 rsc:lib/config_manager.py
 rsc:lib/sync_engine.py
 rsc:lib/icloud_client.py
+rsc:lib/log_redaction.py
 rsc:lib/sync_manifest.py
 rsc:lib/heic_converter.py
 rsc:lib/move_engine.py
