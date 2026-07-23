@@ -8,14 +8,20 @@ BUILD_SH = os.path.join(REPO_ROOT, "build.sh")
 MAKEFILE = os.path.join(REPO_ROOT, "spk", "icloudphotosync", "Makefile")
 VERSION_FILE = os.path.join(REPO_ROOT, "spk", "icloudphotosync", "VERSION")
 
-SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
+VERSION_FILE_RE = re.compile(r"\d+\.\d+\.\d+\n")
 
 
 class VersionConsistencyTest(unittest.TestCase):
     def test_version_file_exists_and_is_semver(self):
-        with open(VERSION_FILE) as f:
-            version = f.read().strip()
-        self.assertRegex(version, SEMVER_RE)
+        # newline="" + fullmatch (not .strip()) so a stray \r (CRLF) or
+        # extra trailing blank line fails loudly instead of being silently
+        # trimmed away — this repo has a documented history of CRLF bugs.
+        with open(VERSION_FILE, newline="") as f:
+            raw = f.read()
+        self.assertIsNotNone(
+            VERSION_FILE_RE.fullmatch(raw),
+            f"VERSION file has unexpected format (CRLF or extra whitespace?): {raw!r}",
+        )
 
     def test_build_sh_has_no_hardcoded_pkg_ver_literal(self):
         with open(BUILD_SH) as f:
