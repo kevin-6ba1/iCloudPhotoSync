@@ -3850,7 +3850,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AccountWizard", {
             // -- a failure just means the account keeps the default folder,
             // correctable later in Settings.
             self.close();
-        });
+        }, true);
     },
 
     _openWizardFolderChooser: function () {
