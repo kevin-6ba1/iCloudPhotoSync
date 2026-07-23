@@ -1,6 +1,6 @@
 # spksrc build artifacts
 work-*/
-packages/
+/packages/
 *.spk
 
 # Local backups and snapshots
