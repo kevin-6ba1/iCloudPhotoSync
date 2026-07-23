@@ -241,9 +241,6 @@ success_sms_sent	=	"SMS sent! Enter the code."
 error_sms_failed	=	"Could not send SMS"
 status_verifying	=	"Verifying code..."
 error_invalid_code	=	"Invalid code. Please try again."
-title_folder	=	"Choose destination folder"
-instruction_folder	=	"Choose where your photos will be saved on this NAS. You can change this later in Settings."
-btn_finish	=	"Finish"
 
 [about]
 checking_update	=	"Checking for updates…"
