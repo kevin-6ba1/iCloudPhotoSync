@@ -3361,7 +3361,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AccountWizard", {
 
     constructor: function (config) {
         var self = this;
-        this.currentStep = "login"; // "login" or "2fa"
+        this.currentStep = "login"; // "login", "2fa", or "folder"
         this.pendingAccountId = null;
         this.pendingPhoneId = null;
         this.useSmsVerification = false;
@@ -3501,6 +3501,77 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AccountWizard", {
             ]
         });
 
+        var folderHeroHtml =
+            '<div style="text-align:center;padding:20px 0 8px;">' +
+                '<img src="/webman/3rdparty/iCloudPhotoSync/images/appleicloud.png" style="width:160px;height:160px;display:inline-block;" />' +
+                '<div style="font-size:20px;font-weight:600;color:#222;margin-top:10px;">' +
+                    Ext.util.Format.htmlEncode(SYNO.SDS.iCloudPhotoSync._T("wizard:title_folder")) +
+                '</div>' +
+                '<div style="font-size:13px;color:#666;margin-top:8px;padding:0 20px;">' +
+                    Ext.util.Format.htmlEncode(SYNO.SDS.iCloudPhotoSync._T("wizard:instruction_folder")) +
+                '</div>' +
+            '</div>';
+
+        this.folderInfoField = new Ext.form.DisplayField({
+            hideLabel: true,
+            value: folderHeroHtml
+        });
+
+        this.folderStatusField = new Ext.form.DisplayField({
+            hideLabel: true,
+            value: "",
+            style: "color: #c00; font-size: 12px; margin-top: 8px;"
+        });
+
+        this.folderDirField = new SYNO.ux.TextFilter({
+            hideLabel: true,
+            name: "target_dir",
+            value: "",
+            emptyText: SYNO.SDS.iCloudPhotoSync._T("settings:placeholder_target_dir"),
+            flex: 1
+        });
+
+        this.folderBrowseBtn = new SYNO.ux.Button({
+            text: SYNO.SDS.iCloudPhotoSync._T("settings:btn_browse"),
+            style: "margin-left: 8px;",
+            handler: function () { self._openWizardFolderChooser(); }
+        });
+
+        this.folderDirComposite = new Ext.Container({
+            layout: "hbox",
+            anchor: "100%",
+            items: [this.folderDirField, this.folderBrowseBtn]
+        });
+
+        this.folderFinishBtn = new SYNO.ux.Button({
+            text: SYNO.SDS.iCloudPhotoSync._T("wizard:btn_finish"),
+            btnStyle: "blue",
+            handler: function () { self.onFinishFolderStep(); }
+        });
+
+        var folderBtnRow = {
+            xtype: "container",
+            layout: "hbox",
+            layoutConfig: { align: "middle" },
+            items: [
+                { xtype: "box", flex: 1 },
+                this.folderFinishBtn
+            ]
+        };
+
+        this.folderPanel = new SYNO.ux.FormPanel({
+            border: false,
+            bodyStyle: "padding: 0 20px 20px; background:#fff;",
+            labelAlign: "top",
+            defaults: { anchor: "100%" },
+            items: [
+                this.folderInfoField,
+                this.folderDirComposite,
+                folderBtnRow,
+                this.folderStatusField
+            ]
+        });
+
         var cfg = Ext.apply({
             title: SYNO.SDS.iCloudPhotoSync._T("wizard:title_add_account"),
             width: 500,
@@ -3508,7 +3579,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AccountWizard", {
             resizable: false,
             layout: "card",
             activeItem: 0,
-            items: [this.loginPanel, this.tfaPanel]
+            items: [this.loginPanel, this.tfaPanel, this.folderPanel]
         }, config);
 
         delete cfg.appWin;
@@ -3721,6 +3792,134 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AccountWizard", {
             }
             self.appWin.loadStatus();
         });
-        this.close();
+        if (this.reAuthAccountId) {
+            this.close();
+        } else {
+            this.showFolderStep();
+        }
+    },
+
+    showFolderStep: function () {
+        var self = this;
+        this.currentStep = "folder";
+        this.getLayout().setActiveItem(2);
+        this.setTitle(SYNO.SDS.iCloudPhotoSync._T("wizard:title_folder"));
+        this.folderStatusField.setValue("");
+        this._defaultTargetDir = "";
+
+        this.appWin.apiRequest("config", {
+            action: "get",
+            account_id: this.pendingAccountId
+        }, function (success, data) {
+            if (success && data && data.target_dir) {
+                self.folderDirField.setValue(data.target_dir);
+                self._defaultTargetDir = data.target_dir;
+            } else {
+                // Couldn't fetch the resolved default -- don't strand the
+                // user on an empty folder step. The account already has a
+                // working default server-side, so just finish.
+                self.close();
+            }
+        });
+    },
+
+    onFinishFolderStep: function () {
+        var self = this;
+        var value = this.folderDirField.getValue();
+
+        if (!value || value === this._defaultTargetDir) {
+            this.close();
+            return;
+        }
+
+        this.folderFinishBtn.setDisabled(true);
+        this.appWin.apiRequest("config", {
+            action: "set",
+            account_id: this.pendingAccountId,
+            dsm_user: this._getWizardDsmUser(),
+            config: Ext.encode({ target_dir: value })
+        }, function (success, data, errMsg) {
+            if (!success) {
+                SYNO.SDS.iCloudPhotoSync._showMsg(
+                    SYNO.SDS.iCloudPhotoSync._T("common:error"),
+                    errMsg || SYNO.SDS.iCloudPhotoSync._T("settings:error_save_failed"),
+                    "error"
+                );
+            }
+            // Whether the save succeeded or not, don't strand the user here
+            // -- a failure just means the account keeps the default folder,
+            // correctable later in Settings.
+            self.close();
+        });
+    },
+
+    _openWizardFolderChooser: function () {
+        var self = this;
+        try {
+            var chooser = new SYNO.SDS.Utils.FileChooser.Chooser({
+                owner: this.appWin,
+                title: SYNO.SDS.iCloudPhotoSync._T("settings:chooser_title"),
+                usage: { type: "chooseDir" },
+                folderToolbar: true,
+                listeners: {
+                    choose: function (ch, path) {
+                        var p = (path && path.path) ? path.path : (typeof path === "string" ? path : "");
+                        if (p && p.charAt(0) === "/") {
+                            self.folderDirField.setValue(p);
+                        } else if (p) {
+                            self.folderDirField.setValue("/" + p);
+                        }
+                        ch.close();
+                        self._validateWizardTargetPath(self.folderDirField.getValue());
+                    }
+                }
+            });
+            chooser.open();
+        } catch (e) {
+            Ext.Msg.prompt(SYNO.SDS.iCloudPhotoSync._T("settings:prompt_title"), SYNO.SDS.iCloudPhotoSync._T("settings:prompt_instruction"), function (btn, text) {
+                if (btn === "ok" && text) {
+                    self.folderDirField.setValue(text);
+                }
+            }, this, false, this.folderDirField.getValue());
+        }
+    },
+
+    _validateWizardTargetPath: function (path) {
+        if (!path) return;
+        var self = this;
+        this.appWin.apiRequest("config", {
+            action: "validate_path",
+            path: path,
+            dsm_user: this._getWizardDsmUser()
+        }, function (success, data) {
+            if (!success || !data) return;
+            if (data.writable) return;
+
+            var title = SYNO.SDS.iCloudPhotoSync._T("settings:path_not_writable_title");
+            var msg;
+            if (data.no_acl_fs) {
+                msg = SYNO.SDS.iCloudPhotoSync._T("settings:path_not_writable_no_acl", [
+                    Ext.util.Format.htmlEncode(path),
+                    Ext.util.Format.htmlEncode(data.fstype || "?")
+                ]);
+            } else {
+                msg = SYNO.SDS.iCloudPhotoSync._T("settings:path_not_writable_acl", [
+                    Ext.util.Format.htmlEncode(path)
+                ]);
+            }
+            SYNO.SDS.iCloudPhotoSync._showDialog({
+                title: title,
+                msg: msg,
+                level: "error",
+                width: 560,
+                height: 320
+            });
+        });
+    },
+
+    _getWizardDsmUser: function () {
+        try { var u = _S("user"); if (u) return u; } catch (e) {}
+        try { var u2 = SYNO.SDS.UserSettings && SYNO.SDS.UserSettings.getUser && SYNO.SDS.UserSettings.getUser(); if (u2) return typeof u2 === "string" ? u2 : u2.username || u2.name || ""; } catch (e) {}
+        return "";
     }
 });
