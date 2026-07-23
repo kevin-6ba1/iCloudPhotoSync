@@ -21,6 +21,7 @@ import config_manager
 import icloud_client
 import sync_manifest
 import heic_converter
+import log_redaction
 
 LOGGER = logging.getLogger("sync_engine")
 
@@ -926,7 +927,7 @@ def _run_sync_locked(account_id):
                     progress.error = str(e)
                     progress.save()
                     return progress
-                LOGGER.exception("Failed to get photo_count for All Photos")
+                log_redaction.safe_log_exception(LOGGER, logging.ERROR, "Failed to get photo_count for All Photos")
                 ps_count = 0
             plan.append(("All Photos", "photostream", "", ps_count, 0))
 
@@ -960,7 +961,7 @@ def _run_sync_locked(account_id):
                     if _is_permanent_api_error(e):
                         LOGGER.warning("Album %s: %s (skipping)", name, e)
                     else:
-                        LOGGER.exception("Failed to get meta for album %s", name)
+                        log_redaction.safe_log_exception(LOGGER, logging.ERROR, "Failed to get meta for album %s", name)
                     return (0, 0)
 
             album_metas = [(name,) + _album_meta(name) for name in enabled_albums]
@@ -988,7 +989,7 @@ def _run_sync_locked(account_id):
                     sl_count = sl_album.photo_count or 0
                     plan.append(("All Photos", "shared_library", "", sl_count, 0))
             except Exception:
-                LOGGER.exception("Failed to plan shared library")
+                log_redaction.safe_log_exception(LOGGER, logging.ERROR, "Failed to plan shared library")
 
             # Shared Library user albums
             sl_selected = sync_config.get("shared_library", {}).get("selected", {})
@@ -1011,7 +1012,7 @@ def _run_sync_locked(account_id):
                                 sub = _sanitize_path_component(name)
                             plan.append((name, "shared_library_albums", sub, count, 0))
                 except Exception:
-                    LOGGER.exception("Failed to plan shared library albums")
+                    log_redaction.safe_log_exception(LOGGER, logging.ERROR, "Failed to plan shared library albums")
 
         progress.total_photos = sum(p[3] for p in plan)
 
@@ -1059,7 +1060,7 @@ def _run_sync_locked(account_id):
         progress.save()
 
     except Exception as e:
-        LOGGER.exception("Sync failed for account %s", account_id)
+        log_redaction.safe_log_exception(LOGGER, logging.ERROR, "Sync failed for account %s", account_id)
         progress.status = "error"
         progress.error = str(e)
         progress.finished_at = int(time.time())
@@ -1341,7 +1342,7 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                         fresh_urls = photos_svc.batch_refresh_photo_urls(
                             refresh_photos, zone_id=zone_id)
                 except Exception:
-                    LOGGER.exception("Proactive refresh failed after re-auth")
+                    log_redaction.safe_log_exception(LOGGER, logging.ERROR, "Proactive refresh failed after re-auth")
 
             refreshed = 0
             kept_old = 0
@@ -1459,7 +1460,7 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                             else:
                                 LOGGER.error("Session re-auth failed")
                         except Exception:
-                            LOGGER.exception("Batch refresh failed after re-auth")
+                            log_redaction.safe_log_exception(LOGGER, logging.ERROR, "Batch refresh failed after re-auth")
                     refreshed = 0
                     for photo, fpath, fname in expired_tasks:
                         url = fresh_urls.get(photo.id)
@@ -1550,7 +1551,7 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                             if _is_permanent_api_error(e):
                                 LOGGER.warning("Producer fetch failed at offset=%d: %s (permanent, not retrying)", off, e)
                                 break
-                            LOGGER.exception("Producer fetch failed at offset=%d (attempt %d)", off, _retry + 1)
+                            log_redaction.safe_log_exception(LOGGER, logging.ERROR, "Producer fetch failed at offset=%d (attempt %d)", off, _retry + 1)
                             if _is_connection_error(e):
                                 if not _wait_for_connectivity(account_id, max_cycles=3):
                                     break
@@ -1600,7 +1601,7 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                     if _is_permanent_api_error(e):
                         LOGGER.warning("Fetch failed at offset=%d: %s (permanent, not retrying)", off, e)
                         return None
-                    LOGGER.exception("Fetch failed at offset=%d (attempt %d)", off, _retry + 1)
+                    log_redaction.safe_log_exception(LOGGER, logging.ERROR, "Fetch failed at offset=%d (attempt %d)", off, _retry + 1)
                     if _is_connection_error(e):
                         if not _wait_for_connectivity(account_id, max_cycles=3):
                             return None

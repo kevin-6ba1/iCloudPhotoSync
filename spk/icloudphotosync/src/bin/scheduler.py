@@ -54,6 +54,7 @@ try:
     import config_manager
     import notifier
     import sync_engine
+    import log_redaction
 except Exception as _e:
     _record_startup_failure(_e)
     raise
@@ -186,7 +187,7 @@ def _run_account(account_id):
     try:
         progress = sync_engine.run_sync(account_id)
     except Exception:
-        LOGGER.exception("Sync crashed for account %s", account_id)
+        log_redaction.safe_log_exception(LOGGER, logging.ERROR, "Sync crashed for account %s", account_id)
         progress = None
     finally:
         # Only mark ran if we actually ran. If another process held the
