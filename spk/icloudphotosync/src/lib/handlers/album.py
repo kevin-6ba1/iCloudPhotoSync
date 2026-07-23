@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 import config_manager
 import icloud_client
+import log_redaction
 
 logger = logging.getLogger(__name__)
 
@@ -230,8 +231,8 @@ def _list_albums(params):
                         "library": "shared",
                     })
                 shared_library_list.sort(key=_album_sort_key)
-        except Exception as exc:
-            logger.error("Failed to list shared library albums: %s", exc, exc_info=True)
+        except Exception:
+            log_redaction.safe_log_exception(logger, logging.ERROR, "Failed to list shared library albums")
 
         # Persist parent relationships, types, and shared library status in cache
         cache["has_shared_library"] = has_shared_library

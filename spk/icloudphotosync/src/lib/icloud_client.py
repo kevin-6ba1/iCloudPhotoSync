@@ -29,6 +29,7 @@ except Exception as _e:
     PyiCloudAPIResponseException = Exception
 
 from config_manager import get_account_dir
+from log_redaction import mask_email, safe_log_exception
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,7 @@ class ICloudClient:
                     msg = m.group(1)
             return {"success": False, "error": msg}
         except Exception as e:
-            logger.exception("Login error for %s", self.apple_id)
+            safe_log_exception(logger, logging.ERROR, "Login error for %s", mask_email(self.apple_id))
             import requests.exceptions
             if isinstance(e, requests.exceptions.ConnectionError):
                 return {"success": False, "error":
@@ -128,7 +129,7 @@ class ICloudClient:
             self.api.data = {"hsaChallengeRequired": True, "dsInfo": {"hsaVersion": 2, "hasICloudQualifyingDevice": True}}
             return True
         except Exception as e:
-            logger.exception("Failed to restore session for 2FA")
+            safe_log_exception(logger, logging.ERROR, "Failed to restore session for 2FA")
             return False
 
     def send_sms_code(self):
@@ -176,7 +177,7 @@ class ICloudClient:
                 }
             return {"success": False, "error": "Could not send SMS"}
         except Exception as e:
-            logger.exception("SMS send error")
+            safe_log_exception(logger, logging.ERROR, "SMS send error")
             return {"success": False, "error": str(e)}
 
     def verify_2fa(self, code, phone_id=None):
@@ -212,7 +213,7 @@ class ICloudClient:
             return {"success": True, "message": "No 2FA required"}
 
         except Exception as e:
-            logger.exception("2FA verification error")
+            safe_log_exception(logger, logging.ERROR, "2FA verification error")
             return {"success": False, "error": str(e)}
 
     def restore_session(self):
@@ -229,15 +230,15 @@ class ICloudClient:
             if not self.api.data.get("dsInfo"):
                 logger.warning("Session restore returned no account data for %s "
                                "(session dir: %s) — session file may be missing or corrupt",
-                               self.apple_id, self.session_dir)
+                               mask_email(self.apple_id), self.session_dir)
                 return False
             if self.api.requires_2fa or self.api.requires_2sa:
                 logger.info("Session for %s requires re-authentication (2FA/2SA)",
-                            self.apple_id)
+                            mask_email(self.apple_id))
                 return False
             return True
         except Exception:
-            logger.warning("Session restore failed for %s", self.apple_id, exc_info=True)
+            safe_log_exception(logger, logging.WARNING, "Session restore failed for %s", mask_email(self.apple_id))
             return False
 
     def is_authenticated(self):

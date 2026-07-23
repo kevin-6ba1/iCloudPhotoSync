@@ -39,6 +39,7 @@ if hasattr(os, "geteuid") and os.geteuid() == 0:
 
 import config_manager
 import sync_engine
+import log_redaction
 
 # Setup logging
 LOG_DIR = os.path.join(config_manager.PKG_VAR, "logs")
@@ -87,7 +88,7 @@ def run_account(account_id):
             except OSError:
                 LOGGER.exception("Failed to write scheduler markers for %s", account_id)
     except Exception:
-        LOGGER.exception("Sync crashed for account %s", account_id)
+        log_redaction.safe_log_exception(LOGGER, logging.ERROR, "Sync crashed for account %s", account_id)
 
 
 def main():
