@@ -10,6 +10,11 @@ Backup3/
 
 # Internal dev notes
 docs/internal/
+/CLAUDE.md
+.claude/
+/docs/AUDIT.md
+/docs/ARCHITECTURE.md
+/docs/ROADMAP.md
 
 # Windows / editor cruft
 Thumbs.db
