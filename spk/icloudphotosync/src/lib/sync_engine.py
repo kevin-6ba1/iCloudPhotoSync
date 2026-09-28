@@ -1194,6 +1194,24 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
 
                 dest_path = os.path.join(dest_dir, filename)
 
+                if dest_path not in synced_this_run and os.path.exists(dest_path):
+                    try:
+                        on_disk_size = os.path.getsize(dest_path)
+                    except OSError:
+                        on_disk_size = -1
+                    if photo.size and on_disk_size == photo.size:
+                        if sync_manifest.mark_synced(
+                            account_id, photo.id, album_name, filename, dest_path,
+                            checksum=photo.checksum, size=photo.size, created=photo.created
+                        ):
+                            with synced_lock:
+                                synced_this_run.add(dest_path)
+                            progress.synced_photos += 1
+                        else:
+                            progress.failed_photos += 1
+                        progress.save_throttled()
+                        continue
+
                 with synced_lock:
                     final_path = _resolve_conflict(dest_path, sync_config, synced_this_run)
                     if final_path is None:
@@ -1413,6 +1431,10 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                             ):
                                 progress.synced_photos += 1
                             else:
+                                try:
+                                    os.remove(fpath)
+                                except OSError:
+                                    pass
                                 progress.failed_photos += 1
                         elif is_url_expired:
                             expired_tasks.append((photo, fpath, fname))
