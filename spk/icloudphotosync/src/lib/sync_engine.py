@@ -376,6 +376,62 @@ def _download_file(url, dest_path, session=None):
     return False
 
 
+_VERIFY_CHUNK = 65536
+
+
+def _fetch_capped(sess, url, range_header, cap, from_end=False, hard_cap=None):
+    headers = {"Range": range_header} if range_header else None
+    try:
+        r = sess.get(url, headers=headers, timeout=(15, 30), stream=True)
+        try:
+            if r.status_code not in (200, 206):
+                return None
+            window = bytearray()
+            total = 0
+            for chunk in r.iter_content(chunk_size=cap):
+                window.extend(chunk)
+                total += len(chunk)
+                if hard_cap and total > hard_cap:
+                    return None
+                if not from_end and len(window) >= cap:
+                    break
+                if from_end and len(window) > cap:
+                    del window[:len(window) - cap]
+            return bytes(window[-cap:]) if from_end else bytes(window[:cap])
+        finally:
+            r.close()
+    except Exception:
+        return None
+
+
+def _verify_untracked_match(url, local_path, expected_size, session=None):
+    sess = session or requests
+    try:
+        with open(local_path, "rb") as f:
+            if expected_size <= _VERIFY_CHUNK * 2:
+                local_bytes = f.read()
+            else:
+                local_head = f.read(_VERIFY_CHUNK)
+                f.seek(expected_size - _VERIFY_CHUNK)
+                local_tail = f.read(_VERIFY_CHUNK)
+    except OSError:
+        return False
+
+    if expected_size <= _VERIFY_CHUNK * 2:
+        remote_bytes = _fetch_capped(sess, url, None, expected_size)
+        return remote_bytes is not None and remote_bytes == local_bytes
+
+    remote_head = _fetch_capped(sess, url, "bytes=0-%d" % (_VERIFY_CHUNK - 1), _VERIFY_CHUNK)
+    if remote_head is None or remote_head != local_head:
+        return False
+
+    remote_tail = _fetch_capped(
+        sess, url,
+        "bytes=%d-%d" % (expected_size - _VERIFY_CHUNK, expected_size - 1),
+        _VERIFY_CHUNK, from_end=True, hard_cap=expected_size + _VERIFY_CHUNK)
+    return remote_tail is not None and remote_tail == local_tail
+
+
 def _writable(path):
     """Return True if the current user can create files under `path`.
 
@@ -1199,7 +1255,9 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                         on_disk_size = os.path.getsize(dest_path)
                     except OSError:
                         on_disk_size = -1
-                    if photo.size and on_disk_size == photo.size:
+                    if photo.size and on_disk_size == photo.size and _verify_untracked_match(
+                        photo.original_url, dest_path, photo.size, session=session
+                    ):
                         if sync_manifest.mark_synced(
                             account_id, photo.id, album_name, filename, dest_path,
                             checksum=photo.checksum, size=photo.size, created=photo.created
