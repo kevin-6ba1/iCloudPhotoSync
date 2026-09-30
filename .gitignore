@@ -12,9 +12,7 @@ Backup3/
 docs/internal/
 /CLAUDE.md
 .claude/
-/docs/AUDIT.md
-/docs/ARCHITECTURE.md
-/docs/ROADMAP.md
+/docs/*
 
 # Windows / editor cruft
 Thumbs.db
@@ -26,3 +24,4 @@ Thumbs.db
 __pycache__/
 *.pyc
 *.pyo
+CHANGELOG.md
