@@ -72,6 +72,12 @@ echo "==> Fixing line endings..."
 find "$STAGE" \( -name "*.py" -o -name "*.cgi" -o -name "*.sh" -o -name "config" \) \
     -exec sed -i 's/\r$//' {} +
 
+# ── 1c. Strip stray bytecode caches from the build machine ─────────────────
+
+echo "==> Removing __pycache__ / .pyc..."
+find "$STAGE" -name "__pycache__" -type d -exec rm -rf {} +
+find "$STAGE" \( -name "*.pyc" -o -name "*.pyo" \) -delete
+
 # ── 2. Create package.tgz ────────────────────────────────────────────────────
 
 echo "==> Creating package.tgz..."
